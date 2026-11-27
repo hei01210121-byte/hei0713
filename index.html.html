@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CSV 위치 지도</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Malgun Gothic", sans-serif; height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 10px 14px; background: #1f2937; color: #fff; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  header label { font-size: 13px; display: flex; align-items: center; gap: 4px; }
+  header select, header input[type=file] { font-size: 13px; }
+  header select { padding: 3px; border-radius: 4px; }
+  #status { font-size: 13px; color: #a7f3d0; margin-left: auto; }
+  #map { flex: 1; }
+  #drop { position: absolute; inset: 0; background: rgba(31,41,55,.6); color: #fff; font-size: 22px;
+          display: none; align-items: center; justify-content: center; z-index: 9999; pointer-events: none; }
+  .popup-table { border-collapse: collapse; font-size: 12px; max-width: 300px; }
+  .popup-table th { text-align: left; color: #6b7280; font-weight: 500; padding: 2px 8px 2px 0; vertical-align: top; white-space: nowrap; }
+  .popup-table td { padding: 2px 0; word-break: break-all; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📍 CSV 위치 지도</h1>
+  <input type="file" id="file" accept=".csv,text/csv">
+  <label>위도 열 <select id="latCol" disabled></select></label>
+  <label>경도 열 <select id="lngCol" disabled></select></label>
+  <label>이름 열 <select id="nameCol" disabled></select></label>
+  <span id="status">CSV 파일을 선택하거나 지도에 끌어다 놓으세요</span>
+</header>
+<div id="map"></div>
+<div id="drop">여기에 CSV를 놓으세요</div>
+
+<script>
+// ---- 지도 준비 ----
+const map = L.map('map', { preferCanvas: true }).setView([36.5, 127.8], 7);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+const layer = L.layerGroup().addTo(map);
+
+let headers = [], rows = [];
+const $ = id => document.getElementById(id);
+
+// ---- 인코딩 자동 판별 (UTF-8 실패 시 EUC-KR/CP949) ----
+function decode(buffer) {
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(buffer); }
+  catch (e) { return new TextDecoder('euc-kr').decode(buffer); }
+}
+
+// ---- CSV 파서 (따옴표, 쉼표, 줄바꿈 처리) ----
+function parseCSV(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const out = []; let row = [], field = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; }
+      else field += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      if (row.length > 1 || row[0] !== '') out.push(row);
+      row = [];
+    } else field += c;
+  }
+  if (field !== '' || row.length) { row.push(field); out.push(row); }
+  return out;
+}
+
+// ---- 열 이름 자동 찾기 ----
+function guess(patterns) {
+  const lower = headers.map(h => h.trim().toLowerCase());
+  for (const p of patterns) {
+    const i = lower.findIndex(h => p instanceof RegExp ? p.test(h) : h === p);
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+
+function fillSelect(sel, idx, allowNone) {
+  sel.innerHTML = (allowNone ? '<option value="-1">(없음)</option>' : '') +
+    headers.map((h, i) => `<option value="${i}">${escapeHtml(h)}</option>`).join('');
+  sel.value = idx; sel.disabled = false;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+// ---- 지도에 표시 ----
+function draw() {
+  layer.clearLayers();
+  const li = +$('latCol').value, gi = +$('lngCol').value, ni = +$('nameCol').value;
+  const bounds = [];
+  let skipped = 0;
+  for (const r of rows) {
+    const lat = parseFloat(r[li]), lng = parseFloat(r[gi]);
+    if (!isFinite(lat) || !isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) { skipped++; continue; }
+    const m = L.circleMarker([lat, lng], { radius: 5, color: '#dc2626', weight: 1, fillColor: '#f87171', fillOpacity: 0.75 });
+    if (ni >= 0 && r[ni]) m.bindTooltip(escapeHtml(r[ni]));
+    m.bindPopup(() =>
+      '<table class="popup-table">' +
+      headers.map((h, i) => r[i] ? `<tr><th>${escapeHtml(h)}</th><td>${escapeHtml(r[i])}</td></tr>` : '').join('') +
+      '</table>', { maxWidth: 320 });
+    layer.addLayer(m);
+    bounds.push([lat, lng]);
+  }
+  $('status').textContent = `표시 ${bounds.length.toLocaleString()}건` +
+    (skipped ? ` · 좌표 없음/오류 ${skipped.toLocaleString()}건 제외` : '');
+  if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] });
+}
+
+// ---- 파일 읽기 ----
+function loadFile(file) {
+  if (!file) return;
+  $('status').textContent = '불러오는 중…';
+  const reader = new FileReader();
+  reader.onload = e => {
+    const data = parseCSV(decode(e.target.result));
+    if (data.length < 2) { $('status').textContent = '데이터가 없습니다'; return; }
+    headers = data[0].map(h => h.trim());
+    rows = data.slice(1);
+    const li = guess(['위도', 'lat', 'latitude', /위도/, /^lat/, 'y', 'y좌표']);
+    const gi = guess(['경도', 'lng', 'lon', 'long', 'longitude', /경도/, /^lo?ng?/, 'x', 'x좌표']);
+    const ni = guess([/명$/, /이름|name|title|명칭|상호/]);
+    fillSelect($('latCol'), li < 0 ? 0 : li);
+    fillSelect($('lngCol'), gi < 0 ? Math.min(1, headers.length - 1) : gi);
+    fillSelect($('nameCol'), ni, true);
+    draw();
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+$('file').addEventListener('change', e => loadFile(e.target.files[0]));
+['latCol', 'lngCol', 'nameCol'].forEach(id => $(id).addEventListener('change', draw));
+
+// 끌어다 놓기
+const drop = $('drop');
+window.addEventListener('dragover', e => { e.preventDefault(); drop.style.display = 'flex'; });
+window.addEventListener('dragleave', e => { if (e.target === document.documentElement || !e.relatedTarget) drop.style.display = 'none'; });
+window.addEventListener('drop', e => { e.preventDefault(); drop.style.display = 'none'; loadFile(e.dataTransfer.files[0]); });
+</script>
+</body>
+</html>
