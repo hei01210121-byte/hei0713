@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CSV 위치 지도</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f7f7;color:#172d31;font:16px system-ui,sans-serif}header{min-height:74px;background:#14363c;color:white;padding:17px clamp(18px,4vw,58px);display:flex;align-items:center;gap:12px}h1{font-size:22px;margin:0;letter-spacing:-.04em}header svg{width:35px;background:#236068;border-radius:10px;padding:7px}main{display:grid;grid-template-columns:minmax(280px,335px) minmax(0,1fr);gap:22px;padding:24px clamp(16px,3vw,44px);max-width:1600px;margin:auto}.panel,.map-panel{background:white;border:1px solid #dbe5e6;border-radius:17px;overflow:hidden}.panel{padding:19px;align-self:start}.map-head{min-height:64px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px}h2{font-size:17px;margin:0}p{margin:9px 0 15px;color:#486367;line-height:1.55;font-size:14px}button,select,input[type=search]{font:inherit;font-size:14px;color:inherit;border:1px solid #b9ced0;border-radius:8px;background:white;padding:9px 11px}button{cursor:pointer}button:hover,.row:hover{background:#e8f4f1}.drop{display:grid;place-items:center;gap:6px;text-align:center;padding:17px 8px;border:1.5px dashed #7ca9a9;border-radius:12px;background:#f2faf8}.drop.over{background:#d8f2ea}.primary{background:#176357;color:white;border-color:#176357}.primary:hover{background:#104b43}small{color:#486367}.example{margin-top:10px;width:100%}.fields{margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:9px}.fields label{display:grid;gap:5px;min-width:0;font-size:14px}.fields label:last-child{grid-column:1/-1}select{width:100%}.status{min-height:21px;margin-bottom:10px}.status.error{color:#a23226}.locations{border-top:1px solid #dbe5e6;padding-top:13px}input[type=search]{width:100%}ul{list-style:none;padding:0;margin:5px 0 0;max-height:245px;overflow:auto}.row{border:0;border-bottom:1px solid #edf1f1;border-radius:0;text-align:left;width:100%;overflow-wrap:anywhere}.row small{display:block;margin-top:3px}#map{height:clamp(460px, calc(100dvh - 165px), 900px);background:#e1eceb;z-index:0}[hidden]{display:none!important}button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid #37a291;outline-offset:2px}@media(max-width:720px){main{grid-template-columns:1fr;gap:14px;padding-top:14px}#map{height:55dvh;min-height:330px}.panel{padding:15px}}
+</style></head><body>
+<header><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" aria-hidden="true"><path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/></svg><h1>CSV 위치 지도</h1></header>
+<main><aside class="panel"><h2>CSV 파일 열기</h2><p>위도와 경도가 있는 CSV 파일을 선택하세요. 파일은 브라우저에서 처리됩니다.</p>
+<div class="drop" id="drop"><button class="primary" id="choose">CSV 선택</button><small>또는 여기에 파일을 끌어 놓으세요</small><input type="file" id="file" accept=".csv,text/csv" hidden></div>
+<button id="example" class="example">예제 데이터 보기</button>
+<button id="featured" class="primary example">한수원 사업소·주변지역 보기</button>
+<div id="layers" hidden style="margin-top:13px">
+  <label style="display:block"><input id="plants" type="checkbox" checked> 사업소 <span style="color:#ac4b20">●</span></label>
+  <label style="display:block;margin-top:5px"><input id="towns" type="checkbox" checked> 주변 읍·면·동 <span style="color:#087969">●</span></label>
+  <p>주변지역은 행정구역 중심점으로 표시합니다. <a href="https://github.com/swuhalee/korea-regions-with-coords">행정구역 좌표</a> · <a href="https://github.com/wri/global-power-plant-database">발전소 좌표</a></p>
+</div>
+<p style="margin-bottom:0"><a href="./khnp-locations.csv" download>위치 CSV 다운로드</a> · <a href="./khnp-map.html" download>지도 HTML 다운로드</a></p>
+<div class="fields" id="fields" hidden><label>위도<select id="lat"></select></label><label>경도<select id="lng"></select></label><label>이름<select id="name"></select></label></div>
+<p id="status" class="status" role="status">첫 행은 열 이름이어야 합니다.</p>
+<section class="locations" id="locations" hidden><input type="search" id="search" aria-label="위치 검색" placeholder="위치 이름 검색"><ul id="list" aria-label="위치 목록"></ul><small id="limit"></small></section></aside>
+<section class="map-panel" aria-label="위치 지도"><div class="map-head"><h2>지도</h2><button id="fit" disabled>전체 위치 보기</button></div><div id="map" aria-label="위치 지도"></div></section></main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const get = id => document.getElementById(id);
+function parseCsv(source) {
+  const rows = [];
+  let row = [], field = '', quoted = false;
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    if (quoted) {
+      if (char === '"' && source[i + 1] === '"') { field += '"'; i++; }
+      else if (char === '"') quoted = false;
+      else field += char;
+    } else if (char === '"' && !field) quoted = true;
+    else if (char === ',') { row.push(field); field = ''; }
+    else if (char === '\n' || char === '\r') {
+      if (char === '\r' && source[i + 1] === '\n') i++;
+      row.push(field);
+      if (row.some(value => value.trim())) rows.push(row);
+      row = []; field = '';
+    } else field += char;
+  }
+  if (quoted) throw new Error('CSV에서 닫히지 않은 따옴표를 확인하세요.');
+  row.push(field);
+  if (row.some(value => value.trim())) rows.push(row);
+  return rows;
+}
+function coordinates(row, latIndex, lngIndex) {
+  const latitude = row[latIndex]?.trim(), longitude = row[lngIndex]?.trim();
+  const lat = Number(latitude), lng = Number(longitude);
+  if (latitude && longitude && Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) return [lat, lng];
+}
+let map, layer, rows = [], positions = [], filename = '', request = 0;
+function status(message, error = false) {
+  get('status').textContent = message;
+  get('status').classList.toggle('error', error);
+}
+if (window.L) {
+  map = L.map('map', {preferCanvas:true}).setView([36.35,127.8],7);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom:19, attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  }).addTo(map);
+  layer = L.featureGroup().addTo(map);
+} else {
+  get('map').textContent = '지도 라이브러리에 연결할 수 없습니다. 인터넷 연결을 확인한 뒤 새로고침하세요.';
+}
+function fit() {
+  if (layer?.getLayers().length) map.fitBounds(layer.getBounds(), {padding:[30,30], maxZoom:14});
+}
+function listLocations() {
+  const query = get('search').value.trim().toLocaleLowerCase();
+  const filtered = positions.filter(point => (point.label + ' ' + (point.detail || '')).toLocaleLowerCase().includes(query));
+  const items = filtered.slice(0, 100).map(point => {
+    const item = document.createElement('li'), button = document.createElement('button');
+    const detail = document.createElement('small');
+    button.className = 'row';
+    button.textContent = point.label;
+    detail.textContent = point.detail || point.coords.map(value => value.toFixed(5)).join(', ');
+    button.append(detail);
+    button.disabled = !map;
+    button.onclick = () => { map.setView(point.coords, Math.max(map.getZoom(), 13)); point.marker.openPopup(); };
+    item.append(button);
+    return item;
+  });
+  get('list').replaceChildren(...items);
+  get('limit').textContent = !filtered.length ? '검색 결과가 없습니다.' : filtered.length > 100 ? filtered.length.toLocaleString() + '개 중 처음 100개 표시' : '';
+}
+function redraw() {
+  layer?.clearLayers();
+  positions = [];
+  const lat = Number(get('lat').value), lng = Number(get('lng').value), name = Number(get('name').value);
+  if (lat < 0 || lng < 0 || lat === lng) {
+    status('서로 다른 위도와 경도 열을 선택하세요.', true);
+  } else {
+    for (const [index, row] of rows.entries()) {
+      const coords = coordinates(row, lat, lng);
+      if (!coords) continue;
+      const label = row[name]?.trim() || '위치 ' + (index + 1);
+      const popup = document.createElement('div');
+      popup.textContent = label + ' · ' + coords.join(', ');
+      const marker = layer ? L.circleMarker(coords, {radius:7,color:'#fff',weight:2,fillColor:'#087969',fillOpacity:1}).bindPopup(popup).addTo(layer) : null;
+      positions.push({coords, label, marker});
+    }
+    const skipped = rows.length - positions.length;
+    status(filename + ' · ' + positions.length.toLocaleString() + '개 위치' + (skipped ? ' · 좌표 오류 ' + skipped.toLocaleString() + '행 제외' : ''), !positions.length);
+  }
+  get('locations').hidden = !positions.length;
+  get('fit').disabled = !positions.length || !map;
+  listLocations();
+  fit();
+}
+function load(source, title) {
+  const [headers, ...data] = parseCsv(source.replace(/^\uFEFF/, ''));
+  if (!headers || headers.length < 2 || !data.length) throw new Error('열 이름과 두 개 이상의 열, 데이터 행이 있는 CSV가 필요합니다.');
+  get('layers').hidden = true;
+  rows = data;
+  filename = title;
+  const aliases = {lat:['lat','latitude','위도','위도deg','y'],lng:['lng','lon','long','longitude','경도','경도deg','x'],name:['name','title','label','장소','이름','장소명','명칭','지점명']};
+  for (const id of Object.keys(aliases)) {
+    const select = get(id);
+    select.replaceChildren(new Option(id === 'name' ? '자동 번호' : '열 선택', '-1'));
+    headers.forEach((header, index) => select.add(new Option(header.trim() || '열 ' + (index + 1), String(index))));
+    select.value = String(headers.findIndex(header => aliases[id].includes(header.trim().toLowerCase().replace(/[\s_()°-]/g, ''))));
+  }
+  get('fields').hidden = false;
+  get('search').value = '';
+  redraw();
+}
+async function readFile(file) {
+  if (!file) return;
+  const current = ++request;
+  try {
+    const buffer = await file.arrayBuffer();
+    if (current !== request) return;
+    let content;
+    try { content = new TextDecoder('utf-8', {fatal:true}).decode(buffer); }
+    catch { content = new TextDecoder('euc-kr').decode(buffer); }
+    load(content, file.name);
+  } catch (error) {
+    if (current === request) status(error.message, true);
+  }
+}
+get('choose').onclick = () => get('file').click();
+get('file').onchange = event => { readFile(event.target.files[0]); event.target.value = ''; };
+get('example').onclick = () => {
+  ++request;
+  load('이름,위도,경도\n서울시청,37.5663,126.9779\n대전역,36.3327,127.4347\n해운대,35.1587,129.1604\n제주공항,33.5104,126.4914','예제 CSV');
+};
+get('drop').ondragover = event => { event.preventDefault(); get('drop').classList.add('over'); };
+get('drop').ondragleave = () => get('drop').classList.remove('over');
+get('drop').ondrop = event => { event.preventDefault(); get('drop').classList.remove('over'); readFile(event.dataTransfer.files[0]); };
+get('search').oninput = listLocations;
+get('fit').onclick = fit;
+for (const id of ['lat','lng','name']) get(id).onchange = redraw;
+const featured = [{"label":"고리본부","coords":[35.3199,129.2948],"kind":"plant","detail":"원자력발전소"},{"label":"새울본부","coords":[35.3271,129.3017],"kind":"plant","detail":"원자력발전소"},{"label":"한빛본부","coords":[35.4105,126.4175],"kind":"plant","detail":"원자력발전소"},{"label":"월성본부","coords":[35.7111,129.4743],"kind":"plant","detail":"원자력발전소"},{"label":"한울본부","coords":[37.0931,129.383],"kind":"plant","detail":"원자력발전소"},{"label":"화천 수력발전소","coords":[38.1174,127.7785],"kind":"plant","detail":"수력발전소"},{"label":"춘천 수력발전소","coords":[37.9672,127.6699],"kind":"plant","detail":"수력발전소"},{"label":"의암 수력발전소","coords":[37.836,127.6779],"kind":"plant","detail":"수력발전소"},{"label":"청평 수력발전소","coords":[37.7232,127.421],"kind":"plant","detail":"수력발전소"},{"label":"보성강 수력발전소","coords":[34.78388888888889,127.1538888888889],"kind":"plant","detail":"수력발전소"},{"label":"괴산 수력발전소","coords":[36.8108,127.7947],"kind":"plant","detail":"수력발전소"},{"label":"팔당 수력발전소","coords":[37.5286,127.2803],"kind":"plant","detail":"수력발전소"},{"label":"양양 양수발전소","coords":[38.0163,128.5467],"kind":"plant","detail":"양수발전소"},{"label":"산청 양수발전소","coords":[35.2563,127.7763],"kind":"plant","detail":"양수발전소"},{"label":"삼랑진 양수발전소","coords":[35.4127,128.876],"kind":"plant","detail":"양수발전소"},{"label":"청송 양수발전소","coords":[36.4052,129.016],"kind":"plant","detail":"양수발전소"},{"label":"무주 양수발전소","coords":[35.9632,127.705],"kind":"plant","detail":"양수발전소"},{"label":"청평 양수발전소","coords":[37.747304,127.474022],"kind":"plant","detail":"양수발전소"},{"label":"예천 양수발전소","coords":[36.5678,128.8761],"kind":"plant","detail":"양수발전소"},{"label":"기장군 장안읍","coords":[35.349581,129.247062],"kind":"town","detail":"고리본부"},{"label":"기장군 일광읍","coords":[35.287202,129.223171],"kind":"town","detail":"고리본부"},{"label":"울주군 온양읍","coords":[35.417205,129.255829],"kind":"town","detail":"새울본부"},{"label":"울주군 서생면","coords":[35.367919,129.31311],"kind":"town","detail":"새울본부"},{"label":"영광군 홍농읍","coords":[35.401928,126.445505],"kind":"town","detail":"한빛본부"},{"label":"영광군 백수읍","coords":[35.301938,126.402943],"kind":"town","detail":"한빛본부"},{"label":"영광군 법성면","coords":[35.353455,126.471921],"kind":"town","detail":"한빛본부"},{"label":"고창군 상하면","coords":[35.444353,126.479121],"kind":"town","detail":"한빛본부"},{"label":"경주시 감포읍","coords":[35.806224,129.478576],"kind":"town","detail":"월성본부"},{"label":"경주시 문무대왕면","coords":[35.798495,129.414082],"kind":"town","detail":"월성본부"},{"label":"경주시 양남면","coords":[35.704097,129.41788],"kind":"town","detail":"월성본부"},{"label":"울진군 울진읍","coords":[37.001049,129.346047],"kind":"town","detail":"한울본부"},{"label":"울진군 죽변면","coords":[37.053837,129.394434],"kind":"town","detail":"한울본부"},{"label":"울진군 북면","coords":[37.074302,129.308264],"kind":"town","detail":"한울본부"},{"label":"화천군 간동면","coords":[38.063675,127.818253],"kind":"town","detail":"화천 수력발전소"},{"label":"화천군 하남면","coords":[38.081651,127.654058],"kind":"town","detail":"화천 수력발전소 · 춘천 수력발전소"},{"label":"화천군 화천읍","coords":[38.185481,127.782558],"kind":"town","detail":"화천 수력발전소"},{"label":"양구군 양구읍","coords":[38.114243,127.952866],"kind":"town","detail":"화천 수력발전소"},{"label":"양구군 방산면","coords":[38.238044,127.930457],"kind":"town","detail":"화천 수력발전소 (댐법지원)"},{"label":"춘천시 사북면","coords":[38.010451,127.643653],"kind":"town","detail":"춘천 수력발전소"},{"label":"춘천시 서면","coords":[37.898179,127.643531],"kind":"town","detail":"춘천 수력발전소 · 의암 수력발전소"},{"label":"춘천시 신동","coords":[37.932059,127.727791],"kind":"town","detail":"춘천 수력발전소 · 의암 수력발전소"},{"label":"춘천시 신북읍","coords":[37.960091,127.753635],"kind":"town","detail":"춘천 수력발전소 · 의암 수력발전소"},{"label":"화천군 상서면","coords":[38.194532,127.615898],"kind":"town","detail":"춘천 수력발전소"},{"label":"춘천시 교동","coords":[37.882238,127.736608],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 근화동","coords":[37.88469,127.714686],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 낙원동","coords":[37.879264,127.724132],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 남산면","coords":[37.779253,127.621246],"kind":"town","detail":"의암 수력발전소 · 청평 수력발전소 · 청평 양수발전소"},{"label":"춘천시 봉의동","coords":[37.886363,127.730948],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 사농동","coords":[37.914902,127.722766],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 삼천동","coords":[37.867791,127.69734],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 소양로1가","coords":[37.89207,127.730176],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 소양로2가","coords":[37.886966,127.726021],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 소양로3가","coords":[37.881846,127.723129],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 소양로4가","coords":[37.877486,127.720254],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 송암동","coords":[37.855972,127.689138],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 신동면","coords":[37.809079,127.705506],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 약사동","coords":[37.874049,127.725171],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 옥천동","coords":[37.884268,127.732497],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 온의동","coords":[37.861202,127.715685],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 요선동","coords":[37.882995,127.727609],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 우두동","coords":[37.906371,127.737262],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 운교동","coords":[37.877032,127.732342],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 조양동","coords":[37.879764,127.730308],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 죽림동","coords":[37.877285,127.72651],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 중도동","coords":[37.889924,127.701552],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 중앙로1가","coords":[37.882531,127.729145],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 중앙로2가","coords":[37.87901,127.726001],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 중앙로3가","coords":[37.875336,127.721619],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 칠전동","coords":[37.844301,127.69933],"kind":"town","detail":"의암 수력발전소"},{"label":"춘천시 퇴계동","coords":[37.853821,127.731586],"kind":"town","detail":"의암 수력발전소"},{"label":"가평군 가평읍","coords":[37.828847,127.487526],"kind":"town","detail":"청평 수력발전소 · 청평 양수발전소"},{"label":"가평군 상면","coords":[37.790775,127.337741],"kind":"town","detail":"청평 수력발전소"},{"label":"가평군 설악면","coords":[37.653325,127.499158],"kind":"town","detail":"청평 수력발전소 · 청평 양수발전소"},{"label":"가평군 청평면","coords":[37.729784,127.429345],"kind":"town","detail":"청평 수력발전소 · 청평 양수발전소"},{"label":"춘천시 남면","coords":[37.738425,127.597866],"kind":"town","detail":"청평 수력발전소 · 청평 양수발전소"},{"label":"홍천군 서면","coords":[37.667237,127.635063],"kind":"town","detail":"청평 수력발전소"},{"label":"보성군 겸백면","coords":[34.825663,127.158498],"kind":"town","detail":"보성강 수력발전소"},{"label":"보성군 득량면","coords":[34.75133,127.168112],"kind":"town","detail":"보성강 수력발전소"},{"label":"보성군 미력면","coords":[34.808572,127.106467],"kind":"town","detail":"보성강 수력발전소"},{"label":"괴산군 청천면","coords":[36.673656,127.815388],"kind":"town","detail":"괴산 수력발전소"},{"label":"괴산군 칠성면","coords":[36.753552,127.882289],"kind":"town","detail":"괴산 수력발전소"},{"label":"괴산군 문광면","coords":[36.771833,127.773664],"kind":"town","detail":"괴산 수력발전소"},{"label":"남양주시 와부읍","coords":[37.593997,127.247116],"kind":"town","detail":"팔당 수력발전소"},{"label":"남양주시 조안면","coords":[37.566782,127.299044],"kind":"town","detail":"팔당 수력발전소"},{"label":"남양주시 화도읍","coords":[37.652845,127.315987],"kind":"town","detail":"팔당 수력발전소"},{"label":"광주시 남한산성면","coords":[37.459525,127.234128],"kind":"town","detail":"팔당 수력발전소"},{"label":"광주시 초월읍","coords":[37.396873,127.311153],"kind":"town","detail":"팔당 수력발전소"},{"label":"광주시 퇴촌면","coords":[37.454141,127.340062],"kind":"town","detail":"팔당 수력발전소"},{"label":"광주시 남종면","coords":[37.502863,127.320716],"kind":"town","detail":"팔당 수력발전소"},{"label":"양평군 양평읍","coords":[37.493556,127.514071],"kind":"town","detail":"팔당 수력발전소"},{"label":"양평군 강상면","coords":[37.461063,127.467692],"kind":"town","detail":"팔당 수력발전소"},{"label":"양평군 강하면","coords":[37.468041,127.411676],"kind":"town","detail":"팔당 수력발전소"},{"label":"양평군 양서면","coords":[37.541282,127.380276],"kind":"town","detail":"팔당 수력발전소"},{"label":"양평군 옥천면","coords":[37.551786,127.486517],"kind":"town","detail":"팔당 수력발전소"},{"label":"양평군 서종면","coords":[37.60933,127.406339],"kind":"town","detail":"팔당 수력발전소"},{"label":"양평군 개군면","coords":[37.439887,127.549498],"kind":"town","detail":"팔당 수력발전소"},{"label":"여주시 흥천면","coords":[37.345392,127.533407],"kind":"town","detail":"팔당 수력발전소"},{"label":"여주시 금사면","coords":[37.396516,127.497663],"kind":"town","detail":"팔당 수력발전소"},{"label":"여주시 산북면","coords":[37.409271,127.442075],"kind":"town","detail":"팔당 수력발전소"},{"label":"여주시 대신면","coords":[37.377595,127.60249],"kind":"town","detail":"팔당 수력발전소"},{"label":"하남시 배알미동","coords":[37.522319,127.261788],"kind":"town","detail":"팔당 수력발전소"},{"label":"하남시 하산곡동","coords":[37.510699,127.228973],"kind":"town","detail":"팔당 수력발전소"},{"label":"하남시 천현동","coords":[37.528138,127.214412],"kind":"town","detail":"팔당 수력발전소"},{"label":"하남시 창우동","coords":[37.535655,127.233981],"kind":"town","detail":"팔당 수력발전소"},{"label":"양양군 서면","coords":[38.010909,128.525087],"kind":"town","detail":"양양 양수발전소"},{"label":"인제군 기린면","coords":[37.964286,128.389227],"kind":"town","detail":"양양 양수발전소"},{"label":"산청군 시천면","coords":[35.276714,127.776716],"kind":"town","detail":"산청 양수발전소"},{"label":"밀양시 삼랑진읍","coords":[35.426123,128.841262],"kind":"town","detail":"삼랑진 양수발전소"},{"label":"밀양시 단장면","coords":[35.505479,128.910684],"kind":"town","detail":"삼랑진 양수발전소"},{"label":"양산시 원동면","coords":[35.420154,128.961219],"kind":"town","detail":"삼랑진 양수발전소"},{"label":"김해시 생림면","coords":[35.343112,128.851463],"kind":"town","detail":"삼랑진 양수발전소"},{"label":"청송군 청송읍","coords":[36.423019,129.098378],"kind":"town","detail":"청송 양수발전소"},{"label":"청송군 파천면","coords":[36.452969,129.027963],"kind":"town","detail":"청송 양수발전소"},{"label":"청송군 안덕면","coords":[36.319134,128.984837],"kind":"town","detail":"청송 양수발전소"},{"label":"안동시 길안면","coords":[36.413067,128.915596],"kind":"town","detail":"청송 양수발전소"},{"label":"무주군 적상면","coords":[35.934857,127.672881],"kind":"town","detail":"무주 양수발전소"},{"label":"무주군 설천면","coords":[35.954333,127.783104],"kind":"town","detail":"무주 양수발전소"},{"label":"무주군 무주읍","coords":[36.011513,127.655893],"kind":"town","detail":"무주 양수발전소"},{"label":"예천군 용문면","coords":[36.706363,128.394404],"kind":"town","detail":"예천 양수발전소"},{"label":"예천군 은풍면","coords":[36.745111,128.442267],"kind":"town","detail":"예천 양수발전소"},{"label":"예천군 효자면","coords":[36.793893,128.422192],"kind":"town","detail":"예천 양수발전소"}];
+function showFeatured() {
+  ++request;
+  get('fields').hidden = true;
+  get('layers').hidden = false;
+  get('search').value = '';
+  drawFeatured();
+}
+function drawFeatured() {
+  layer?.clearLayers();
+  positions = featured.filter(point => get(point.kind === 'plant' ? 'plants' : 'towns').checked).map(point => {
+    const popup = document.createElement('div');
+    const title = document.createElement('strong');
+    const detail = document.createElement('div');
+    title.textContent = point.label;
+    detail.textContent = point.detail;
+    popup.append(title, detail);
+    const marker = layer ? L.circleMarker(point.coords, {
+      radius: point.kind === 'plant' ? 9 : 6, color:'#fff', weight:2,
+      fillColor:point.kind === 'plant' ? '#ac4b20' : '#087969', fillOpacity:1
+    }).bindPopup(popup).addTo(layer) : null;
+    return {...point, marker};
+  });
+  const plantCount = positions.filter(point => point.kind === 'plant').length;
+  status('사업소 ' + plantCount + '곳 · 주변 읍·면·동 ' + (positions.length - plantCount) + '곳');
+  get('locations').hidden = !positions.length;
+  get('fit').disabled = !positions.length || !map;
+  listLocations();
+  fit();
+}
+get('featured').onclick = showFeatured;
+get('plants').onchange = drawFeatured;
+get('towns').onchange = drawFeatured;
+showFeatured();
+</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a60f6daebeca8b5b',t:'MTc5NTc2NDYzNQ=='};var l=window.parent.location,o;try{o=new URL(l.origin).origin}catch(e){try{o=new URL(new URL(l.href).origin).origin}catch(e){o=''}}var u='/cdn-cgi/challenge-platform/scripts/jsd/main.js?ray=a60f6daebeca8b5b',a=document.createElement('script');a.src=o?new URL(u,o).href:u;document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body></html>
